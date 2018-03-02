@@ -137,17 +137,18 @@ function unpkgQuestion(msg, offset) {
         names.push(msg.slice(offset, offset + _length).toString('ascii'));
         offset += _length;
     }
+
     debug('name: %s', names.join('.'));
 
     // Question Type 16字节 2byte
     let type = msg.readUInt16BE(offset);
     offset += 2;
-    debug('type: %d, type: 0x%s', type, type.toString(16));
+    debug('type: %d, type(hex): 0x%s', type, type.toString(16));
 
     // Question Class 16字节 2byte
     let clazz = msg.readUInt16BE(offset);
     offset += 2;
-    debug('class: %d, class: 0x%s', clazz, clazz.toString(16));
+    debug('class: %d, class(hex): 0x%s', clazz, clazz.toString(16));
 
     return { names, type, clazz, pointer, offset, name: names.join('.') };
 }
@@ -179,10 +180,20 @@ function unpkgRR(msg, offset) {
     debug('--------------[unpkgRR %d]------------------', offset);
     // Resource Record Name
     let rrName = [];
-    while (offset < msg.length && 0 !== (length = msg[offset++])) {
-        debug('length: %d, offset: %d, question: %s', length, offset, msg.slice(offset, offset + length).toString('ascii'));
-        rrName.push(msg.slice(offset, offset + length).toString('ascii'));
-        offset += length;
+    let _length = 0;
+    // 首字母00表示压缩
+    if ((msg.readUInt8(offset) & 0b11000000) === 0b11000000) {
+        let _offset = msg.readUInt16BE(offset) & 0b00111111;
+        while (_offset < msg.length && 0 !== (_length = msg[_offset++])) {
+            rrName.push(msg.slice(_offset, _offset + _length).toString('ascii'));
+            _offset += _length;
+        }
+        offset += 2;
+    } else {
+        while (offset < msg.length && 0 !== (_length = msg[offset++])) {
+            rrName.push(msg.slice(offset, offset + _length).toString('ascii'));
+            offset += _length;
+        }
     }
     debug('rrName: %s', rrName.join('.'));
 
@@ -197,7 +208,7 @@ function unpkgRR(msg, offset) {
     // 16字节 2byte
     let rrClass = msg.readUInt16BE(offset);
     offset += 2;
-    debug('rrClass: %s', rrClass, 16);
+    debug('rrClass: %s', rrClass);
 
     // Time-to-Live
     let ttl = msg.readUInt32BE(offset);
@@ -210,7 +221,18 @@ function unpkgRR(msg, offset) {
     debug('rdl: %d', rdl);
 
     let rd;
-    if (rdl > 0) rd = msg.slice(offset, offset += rdl);
+    if (rdl > 0) {
+        rd = msg.slice(offset, offset += rdl);
+        // TODO 解析不同类型的RR数据
+        // A 地址
+        if (rrType === 1) {
+            debug('rdd: %s', `${rd.readUInt8(0)}.${rd.readUInt8(1)}.${rd.readUInt8(2)}.${rd.readUInt8(3)}`)
+        } if (rrType === 5) {
+            
+        } else {
+            debug('rdd: %s', rd.toString('ascii'));
+        }
+    }
 
     return {
         rrName,
@@ -223,13 +245,8 @@ function unpkgRR(msg, offset) {
     }
 }
 
-server.on('error', (err) => {
-    debug(`server error:\n${err.stack}`);
-    server.close();
-});
-
-server.on('message', (msg, rinfo) => {
-    debug('msg(hex): %s', msg.toString('hex'));
+function unpkgdns(msg) {
+    debug('--------------[unpkgdns %s]------------------', msg.toString('hex'));
 
     let header = unpkgHeader(msg.slice(0, 12));
     // start question
@@ -270,13 +287,24 @@ server.on('message', (msg, rinfo) => {
     }
     debug('additionals: %o', additionals);
 
+    return { header, questions, answers, authorities, additionals };
+}
+
+server.on('error', (err) => {
+    debug(`server error:\n${err.stack}`);
+    server.close();
+});
+
+server.on('message', (msg, rinfo) => {
+    let { header, questions, answers, authorities, additionals } = unpkgdns(msg);
+
     // -------------------------------------
 
     // Transaction ID
     let resTransactionId = header.transactionId;
     let resflags = _.merge(header.flags, { qr: '1', tc: 0 });
     let resQuestionRRC = header.questionRRC;
-    let resAnswerRRC = 200;
+    let resAnswerRRC = 1;
     let resAuthorityRRC = 0;
     let resAdditionalRRC = 0;
     let resHeader = pkgHeader(resTransactionId, resflags, resQuestionRRC, resAnswerRRC, resAuthorityRRC, resAdditionalRRC);
@@ -312,4 +340,7 @@ server.on('listening', () => {
     debug('server listening %s:%d', address.address, address.port);
 });
 
-server.bind(53);
+// server.bind(53);
+
+let msg = Buffer.from('15a9818000010003000000010377777705626169647503636f6d0000010001c00c000500010000045e000f0377777701610673686966656ec016c02b00010001000000da0004b4958497c02b00010001000000da0004b49583620000291000000000000000', 'hex');
+console.log('msg: %O', unpkgdns(msg));
